@@ -3,9 +3,116 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>2人専用秘密チャット (完成版)</title>
-    <!-- 世界中で使われている確実なリアルタイム通信ライブラリを読み込み -->
-    <script src="https://pusher.com"></script>
+    <title>2人専用秘密チャット (Firebase完成版)</title>
+    <!-- Firebaseの最新ライブラリを読み込み -->
+    <script type="module">
+        import { initializeApp } from "https://gstatic.com";
+        import { getFirestore, collection, addDoc, onSnapshot, query, orderBy } from "https://gstatic.com";
+
+        // 由美さんのFirebaseカギを設定
+        const firebaseConfig = {
+            apiKey: "AIzaSyA0QqvZMndczLVtiwKw9PRiYG1F6Wp7TAw",
+            authDomain: "://firebaseapp.com",
+            projectId: "my-chat-firebase2",
+            storageBucket: "my-chat-firebase2.firebasestorage.app",
+            messagingSenderId: "962794224817",
+            appId: "1:962794224817:web:ae0114128ec0c4454c7690"
+        };
+
+        // Firebaseの初期化
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+
+        // 自分のIDをランダムに作成
+        const MY_ID = 'user_' + Math.random().toString(36).substring(2, 9);
+
+        // HTML要素の取得
+        const chatArea = document.getElementById('chat-area');
+        const msgInput = document.getElementById('message-input');
+        const sendBtn = document.getElementById('send-btn');
+        const statusText = document.getElementById('status');
+
+        // 通知の許可
+        if (Notification.permission === 'default') {
+            Notification.requestPermission();
+        }
+
+        // データベースに接続してメッセージをリアルタイム監視
+        const q = query(collection(db, "messages"), orderBy("timestamp", "asc"));
+        
+        // 接続が成功したらオンライン表示
+        statusText.innerText = '🟢 オンライン';
+        msgInput.disabled = false;
+        sendBtn.disabled = false;
+        msgInput.placeholder = 'メッセージを入力...';
+
+        onSnapshot(q, (snapshot) => {
+            snapshot.docChanges().forEach((change) => {
+                if (change.type === "added") {
+                    const data = change.doc.data();
+                    const senderType = (data.sender === MY_ID) ? 'me' : 'peer';
+                    
+                    // 画面にメッセージを表示
+                    appendMessage(data.text, senderType, data.time);
+
+                    // 相手からのメッセージならプッシュ通知
+                    if (senderType === 'peer') {
+                        showNotification('パートナーからのメッセージ', data.text);
+                    }
+                }
+            });
+        });
+
+        // メッセージ送信関数をグローバルに登録
+        window.sendMessage = async function() {
+            const text = msgInput.value.trim();
+            if (!text) return;
+
+            msgInput.value = '';
+            const now = new Date();
+            const timeStr = `${now.getHours()}:${String(now.getMinutes()).padStart(2, '0')}`;
+
+            try {
+                // Googleのデータベースに直接保存
+                await addDoc(collection(db, "messages"), {
+                    text: text,
+                    sender: MY_ID,
+                    time: timeStr,
+                    timestamp: new Date()
+                });
+            } catch (e) {
+                console.error("送信エラー: ", e);
+            }
+        };
+
+        function appendMessage(text, sender, timeStr) {
+            const wrapper = document.createElement('div');
+            wrapper.classList.add('msg-wrapper', sender);
+
+            const msgDiv = document.createElement('div');
+            msgDiv.classList.add('msg');
+            msgDiv.innerText = text;
+
+            const timeDiv = document.createElement('div');
+            timeDiv.classList.add('time');
+            timeDiv.innerText = timeStr;
+
+            wrapper.appendChild(msgDiv);
+            wrapper.appendChild(timeDiv);
+            chatArea.appendChild(wrapper);
+            chatArea.scrollTop = chatArea.scrollHeight;
+        }
+
+        function showNotification(title, body) {
+            if (Notification.permission === 'granted' && document.hidden) {
+                new Notification(title, { body: body });
+            }
+        }
+
+        msgInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') sendMessage();
+        });
+    </script>
     <style>
         :root {
             --bg-color: #7494c4;
@@ -100,142 +207,5 @@
     <button id="send-btn" onclick="sendMessage()" disabled>送信</button>
 </div>
 
-<script>
-    // ==========================================
-    // 🔒 2人だけの固有の部屋ID（設定済み！）
-    // ==========================================
-    const ROOM_ID = 'ktgtr1327';
-    const MY_ID = 'user_' + Math.random().toString(36).substring(2, 9);
-
-    const chatArea = document.getElementById('chat-area');
-    const msgInput = document.getElementById('message-input');
-    const sendBtn = document.getElementById('send-btn');
-    const statusText = document.getElementById('status');
-
-    // ローカルストレージ（ブラウザ内保存）を使って、過去の履歴を確実に残す仕組み
-    const STORAGE_KEY = `chat_history_${ROOM_ID}`;
-
-    // 起動時の処理
-    document.addEventListener('DOMContentLoaded', () => {
-        if (Notification.permission === 'default') {
-            Notification.requestPermission();
-        }
-        initChat();
-    });
-
-    function initChat() {
-        // 1. まず過去に送受信したメッセージ履歴があれば画面に復元する（すれ違い保存の実現）
-        const localData = localStorage.getItem(STORAGE_KEY);
-        if (localData) {
-            const savedMessages = JSON.parse(localData);
-            savedMessages.forEach(msg => {
-                const senderType = (msg.sender === MY_ID) ? 'me' : (msg.sender === 'peer' ? 'peer' : msg.sender);
-                appendMessage(msg.text, senderType, msg.time);
-            });
-        }
-
-        // 2. 超確実なリアルタイム通信サービス「Pusher」を起動
-        // アカウント登録不要で使える公開中継キーを設定しています
-        const pusher = new Pusher('app-key', {
-            cluster: 'ap3',
-            wsHost: 'sock.val.town',
-            wsPort: 443,
-            wssPort: 443,
-            enabledTransports: ['ws', 'wss'],
-            forceTLS: true
-        });
-
-        const channel = pusher.subscribe(`room-${ROOM_ID}`);
-
-        // サーバーと繋がったら即座にオンラインにする
-        pusher.connection.bind('connected', () => {
-            statusText.innerText = '🟢 オンライン';
-            msgInput.disabled = false;
-            sendBtn.disabled = false;
-            msgInput.placeholder = 'メッセージを入力...';
-        });
-
-        // 相手からメッセージがリアルタイムで飛んできたときの処理
-        channel.bind('message', (data) => {
-            // 自分が送ったイベントは無視する
-            if (data.senderId === MY_ID) return;
-
-            // 画面に追加
-            appendMessage(data.text, 'peer', data.time);
-            
-            // ローカル履歴に保存
-            saveToLocal(data.text, 'peer', data.time);
-
-            // スマホに通知
-            showNotification('パートナーからのメッセージ', data.text);
-        });
-
-        pusher.connection.bind('error', () => {
-            statusText.innerText = '接続不安定（再試行中）';
-        });
-    }
-
-    // メッセージ送信
-    async function sendMessage() {
-        const text = msgInput.value.trim();
-        if (!text) return;
-
-        msgInput.value = '';
-        const now = new Date();
-        const timeStr = `${now.getHours()}:${String(now.getMinutes()).padStart(2, '0')}`;
-
-        // 自分の画面に表示
-        appendMessage(text, 'me', timeStr);
-        // 自分の履歴に保存
-        saveToLocal(text, 'me', timeStr);
-
-        try {
-            // 中継ネットワークにメッセージを乗せる（相手に一瞬で届く）
-            await fetch(`https://allorigins.win{encodeURIComponent(`https://val.town{ROOM_ID}/send?text=${encodeURIComponent(text)}&sender=${MY_ID}&time=${timeStr}`)}`);
-        } catch (e) {
-            console.error('送信エラー:', e);
-        }
-    }
-
-    // 画面に吹き出しを出す
-    function appendMessage(text, sender, timeStr) {
-        const wrapper = document.createElement('div');
-        wrapper.classList.add('msg-wrapper', sender);
-
-        const msgDiv = document.createElement('div');
-        msgDiv.classList.add('msg');
-        msgDiv.innerText = text;
-
-        const timeDiv = document.createElement('div');
-        timeDiv.classList.add('time');
-        timeDiv.innerText = timeStr;
-
-        wrapper.appendChild(msgDiv);
-        wrapper.appendChild(timeDiv);
-        chatArea.appendChild(wrapper);
-        chatArea.scrollTop = chatArea.scrollHeight;
-    }
-
-    // スマホの中にメッセージを記憶させておく処理
-    function saveToLocal(text, sender, time) {
-        let current = [];
-        const localData = localStorage.getItem(STORAGE_KEY);
-        if (localData) current = JSON.parse(localData);
-        
-        current.push({ text, sender, time });
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(current));
-    }
-
-    // 通知機能
-    function showNotification(title, body) {
-        if (Notification.permission === 'granted' && document.hidden) {
-            new Notification(title, { body: body });
-        }
-    }
-
-    msgInput.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') sendMessage();
-    });
-</script>
 </body>
 </html>
